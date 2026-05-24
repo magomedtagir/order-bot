@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+orders.db
+*.xlsx
+*.xls
+.venv/
+venv/
+*.egg-info/
+.DS_Store
+.claude/
