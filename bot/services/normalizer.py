@@ -53,19 +53,24 @@ class SmartNormalizer:
 
     async def reload(self, session: AsyncSession) -> None:
         async with self._lock:
-            await self._load_synonyms(session)
             await self._load_client_cache(session)
             await self._load_products(session)
+            # Load synonyms last — they extend _alias_to_product set by _load_products
+            await self._load_synonyms(session)
 
     async def _load_synonyms(self, session: AsyncSession) -> None:
         result = await session.execute(select(Synonym))
         rows = result.scalars().all()
-        self._synonyms = {}
+        count = 0
         for r in rows:
             base = extract_base_name(r.raw_name)
             if base:
-                self._synonyms[base] = r.normalized_name
-        logger.info("[NORMALIZER] Synonyms loaded: %d", len(self._synonyms))
+                self._alias_to_product[base] = r.normalized_name
+                count += 1
+            if r.normalized_name not in self._product_full_names:
+                self._product_full_names.append(r.normalized_name)
+                self._product_name_bases.append(extract_base_name(r.normalized_name))
+        logger.info("[NORMALIZER] Synonyms loaded: %d", count)
 
     async def _load_client_cache(self, session: AsyncSession) -> None:
         result = await session.execute(select(ClientNameCache))
