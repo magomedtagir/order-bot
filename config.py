@@ -1,11 +1,14 @@
+import logging
 from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
     BOT_TOKEN: str
     ADMIN_IDS: str = ""
-    DATABASE_URL: str = "sqlite+aiosqlite:///orders.db"
+    DATABASE_URL: str = "postgresql+asyncpg://USER:PASSWORD@HOST:5432/DBNAME"
     LOG_LEVEL: str = "INFO"
     STOCK_API_URL_IPSH: str = "http://185.63.191.2/ipsh/hs/analytics/stocks"
     STOCK_API_URL_IPD: str = "http://185.63.191.2/ipd/hs/analytics/stocks"
@@ -21,7 +24,18 @@ class Settings(BaseSettings):
     def admin_ids_list(self) -> List[int]:
         if not self.ADMIN_IDS.strip():
             return []
-        return [int(x.strip()) for x in self.ADMIN_IDS.split(",") if x.strip().isdigit()]
+        ids = []
+        for x in self.ADMIN_IDS.split(","):
+            x = x.strip()
+            if x.isdigit():
+                ids.append(int(x))
+            elif x:
+                logger.warning(
+                    "ADMIN_IDS contains non-numeric token %r — ignored. "
+                    "Use comma-separated Telegram user IDs (integers).",
+                    x,
+                )
+        return ids
 
 
 settings = Settings()

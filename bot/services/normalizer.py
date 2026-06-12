@@ -198,8 +198,8 @@ class SmartNormalizer:
         words = base.split()
         candidates: list[tuple[str, float]] = []
 
-        for fn in self._product_full_names:
-            fn_words = extract_base_name(fn).split()
+        for i, fn in enumerate(self._product_full_names):
+            fn_words = self._product_name_bases[i].split()
             fn_lower = fn.lower()
             all_match = True
             total_score = 0
@@ -277,8 +277,8 @@ class SmartNormalizer:
             return self._alias_to_product[base]
         words = base.split()
         candidates: list[tuple[str, float]] = []
-        for fn in self._product_full_names:
-            fn_words = extract_base_name(fn).split()
+        for i, fn in enumerate(self._product_full_names):
+            fn_words = self._product_name_bases[i].split()
             fn_lower = fn.lower()
             all_match = True
             total_score = 0
@@ -324,8 +324,12 @@ class SmartNormalizer:
 
     def add_to_cache(self, raw_name: str, normalized_name: str) -> None:
         base = extract_base_name(raw_name)
-        if base:
-            self._synonyms[base] = normalized_name
+        if not base:
+            return
+        self._alias_to_product[base] = normalized_name
+        if normalized_name not in self._product_full_names:
+            self._product_full_names.append(normalized_name)
+            self._product_name_bases.append(extract_base_name(normalized_name))
 
     def get_client_cache(self, client_name: str) -> dict:
         return dict(self._client_cache.get(client_name, {}))

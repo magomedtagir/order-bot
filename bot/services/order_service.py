@@ -1,18 +1,21 @@
+import asyncio
 import re
 import logging
-from datetime import datetime, date
+from datetime import datetime
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete, cast, Date
+from sqlalchemy import select, func, delete
 from sqlalchemy.orm import selectinload
 
 from config import settings
-from bot.models.models import Order, OrderItem, StatusHistory, OrderStatus, UnknownItem
+from bot.models.models import Order, OrderItem, UnknownItem
 from bot.services.normalizer import normalizer
 from bot.services.stock_service import stock_checker
 
 logger = logging.getLogger(__name__)
+
+_order_create_lock = asyncio.Lock()
 
 _EMOJI_RE = re.compile(
     "["
@@ -87,7 +90,6 @@ async def _build_items(
     client_name: str,
     session: AsyncSession,
 ) -> tuple[list[OrderItem], list[str], list[str]]:
-    # Refresh stock cache once per call (no-op if still fresh)
     if settings.STOCK_API_TOKEN:
         try:
             await stock_checker.ensure_fresh(
@@ -136,28 +138,22 @@ async def create_order(
     message_id: int,
     chat_id: int,
 ) -> tuple[Order, list[OrderItem], list[str], list[str]]:
-    order_number = await _next_order_number(session)
-    order = Order(
-        order_number=order_number,
-        source_text=source_text,
-        client_name=client_name,
-        status=OrderStatus.QUEUED,
-        message_id=message_id,
-        chat_id=chat_id,
-    )
-    session.add(order)
-    await session.flush()
+    async with _order_create_lock:
+        order_number = await _next_order_number(session)
+        order = Order(
+            order_number=order_number,
+            source_text=source_text,
+            client_name=client_name,
+            message_id=message_id,
+            chat_id=chat_id,
+        )
+        session.add(order)
+        await session.flush()
 
     item_objs, unknown_raw_names, stock_out_names = await _build_items(order.id, items, client_name, session)
     for obj in item_objs:
         session.add(obj)
 
-    session.add(StatusHistory(
-        order_id=order.id,
-        old_status=None,
-        new_status=OrderStatus.QUEUED,
-        changed_by=None,
-    ))
     await session.commit()
     return order, item_objs, unknown_raw_names, stock_out_names
 
@@ -168,7 +164,6 @@ async def update_order_items(
     items: list[dict],
     source_text: str,
 ) -> tuple[list[OrderItem], list[str], list[str]]:
-    # Remove old unknown_items for this order
     await session.execute(delete(UnknownItem).where(UnknownItem.order_id == order.id))
     await session.execute(delete(OrderItem).where(OrderItem.order_id == order.id))
     await session.flush()
@@ -181,24 +176,6 @@ async def update_order_items(
     order.updated_at = datetime.utcnow()
     await session.commit()
     return item_objs, unknown_raw_names, stock_out_names
-
-
-async def update_order_status(
-    session: AsyncSession,
-    order: Order,
-    new_status: OrderStatus,
-    changed_by: int,
-) -> None:
-    old_status = order.status
-    order.status = new_status
-    order.updated_at = datetime.utcnow()
-    session.add(StatusHistory(
-        order_id=order.id,
-        old_status=old_status,
-        new_status=new_status,
-        changed_by=changed_by,
-    ))
-    await session.commit()
 
 
 async def set_bot_message_id(session: AsyncSession, order_id: int, bot_message_id: int) -> None:
@@ -224,7 +201,7 @@ async def get_order_by_number(session: AsyncSession, order_number: int) -> Optio
     result = await session.execute(
         select(Order)
         .where(Order.order_number == order_number)
-        .options(selectinload(Order.items), selectinload(Order.history))
+        .options(selectinload(Order.items))
     )
     return result.scalar_one_or_none()
 
@@ -236,34 +213,6 @@ async def get_recent_orders(session: AsyncSession, limit: int = 10) -> list[Orde
         .limit(limit)
         .options(selectinload(Order.items))
     )
-    return list(result.scalars().all())
-
-
-async def get_status_counts(session: AsyncSession) -> dict[OrderStatus, int]:
-    result = await session.execute(
-        select(Order.status, func.count(Order.id).label("cnt"))
-        .group_by(Order.status)
-    )
-    counts = {s: 0 for s in OrderStatus}
-    for row in result.all():
-        counts[row.status] = row.cnt
-    return counts
-
-
-async def get_orders_by_status(
-    session: AsyncSession,
-    status: OrderStatus,
-    date_filter: Optional[date] = None,
-) -> list[Order]:
-    q = (
-        select(Order)
-        .where(Order.status == status)
-        .order_by(Order.created_at.asc())
-        .options(selectinload(Order.items))
-    )
-    if date_filter is not None:
-        q = q.where(cast(Order.updated_at, Date) == date_filter)
-    result = await session.execute(q)
     return list(result.scalars().all())
 
 

@@ -25,23 +25,6 @@ async def init_db() -> None:
     logger.info("Database tables created")
 
 
-async def migrate_db() -> None:
-    """Idempotent: adds columns that may be missing in existing databases."""
-    import sqlite3
-    db_path = settings.DATABASE_URL.replace("sqlite+aiosqlite:///", "")
-    conn = sqlite3.connect(db_path)
-    migrations = [
-        ("order_items", "stock_out", "BOOLEAN NOT NULL DEFAULT 0"),
-    ]
-    for table, col, defn in migrations:
-        try:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {defn}")
-            conn.commit()
-            logger.info("DB migration: added column %s.%s", table, col)
-        except sqlite3.OperationalError:
-            pass  # column already exists
-    conn.close()
-
 
 async def load_initial_synonyms() -> None:
     synonyms_path = Path(__file__).parent.parent.parent / "data" / "synonyms.json"

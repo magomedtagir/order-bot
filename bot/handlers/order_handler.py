@@ -5,17 +5,14 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from config import settings
-from bot.models.models import OrderStatus, STATUS_LABELS, OrderItem, UnknownItem
-from bot.keyboards import build_status_keyboard, build_order_text
+from bot.models.models import OrderItem, UnknownItem
+from bot.keyboards import build_order_text
 from bot.services.normalizer import normalizer
 from bot.services.order_service import (
     parse_order_text,
     create_order,
     get_order_by_message,
-    get_order_by_number,
     update_order_items,
-    update_order_status,
     set_bot_message_id,
 )
 
@@ -46,17 +43,14 @@ async def _handle_hint_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not hint_text:
         return
 
-    # Try to find the hint text in the product catalog
     resolved_name = normalizer.find_product(hint_text) or hint_text
 
     async with _session_factory(context)() as session:
-        # Update order item
         await session.execute(
             sa_update(OrderItem)
             .where(OrderItem.order_id == hint["order_id"], OrderItem.raw_name == hint["raw_name"])
             .values(normalized_name=resolved_name, is_unknown=False)
         )
-        # Mark unknown_item as resolved
         await session.execute(
             sa_update(UnknownItem)
             .where(UnknownItem.order_id == hint["order_id"], UnknownItem.raw_name == hint["raw_name"])
@@ -64,14 +58,12 @@ async def _handle_hint_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         await session.commit()
 
-    # Save to client cache so future orders use it
     async with _session_factory(context)() as session:
         await normalizer.add_resolution(session, hint["client_name"], hint["raw_name"], resolved_name)
 
-    # Remove from pending hints
     hint_requests.pop(key, None)
 
-    note = f" (найдено в каталоге)" if resolved_name != hint_text else ""
+    note = " (найдено в каталоге)" if resolved_name != hint_text else ""
     await message.reply_text(
         f'✅ «{hint["raw_name"]}» → «{resolved_name}»{note}\nЗапомнил для клиента {hint["client_name"]}.'
     )
@@ -117,7 +109,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     logger.info("Order #%03d created: %s (%d items)", order.order_number, order.client_name, len(parsed["items"]))
 
-    # Уведомление об неизвестных позициях — в тот же чат
     hint_requests: dict = context.bot_data.setdefault("hint_requests", {})
     for raw in unknown_items:
         try:
@@ -138,7 +129,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except Exception as exc:
             logger.warning("Failed to notify chat about unknown item: %s", exc)
 
-    # Уведомление об отсутствующих позициях — в тот же чат
     if stock_out_names:
         try:
             names_list = "\n".join(f"  • {n}" for n in stock_out_names)
@@ -153,79 +143,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.warning("Failed to notify admin about stock: %s", exc)
 
     items_text = _format_items(item_objs)
-    text = build_order_text(order.order_number, order.client_name, items_text, order.status)
-    keyboard = build_status_keyboard(order.order_number, order.status)
-    sent = await message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+    text = build_order_text(order.order_number, order.client_name, items_text)
+    sent = await message.reply_text(text, parse_mode="HTML")
 
     async with _session_factory(context)() as session:
         await set_bot_message_id(session, order.id, sent.message_id)
-
-
-async def handle_order_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-
-    parts = query.data.split(":", 3)
-    action = parts[0]
-    order_number = int(parts[1])
-
-    if action != "status":
-        return
-
-    new_status = OrderStatus(parts[2])
-    expected_current = OrderStatus(parts[3]) if len(parts) > 3 else None
-
-    async with _session_factory(context)() as session:
-        order = await get_order_by_number(session, order_number)
-        if not order:
-            await query.edit_message_reply_markup(reply_markup=None)
-            return
-
-        # Защита от двойного нажатия
-        if expected_current and order.status != expected_current:
-            await query.answer("⚠️ Статус уже был изменён", show_alert=True)
-            return
-
-        await update_order_status(session, order, new_status, query.from_user.id)
-
-        items_text = _format_items(order.items)
-        text = build_order_text(order_number, order.client_name, items_text, new_status)
-        keyboard = build_status_keyboard(order_number, new_status)
-        try:
-            await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
-        except Exception:
-            pass  # сообщение могло быть удалено
-
-        label = STATUS_LABELS[new_status]
-        notification = f"📢 Статус заказа #{order_number:03d} ({order.client_name}): {label}"
-        if order.chat_id and order.chat_id != query.message.chat_id:
-            try:
-                await context.bot.send_message(chat_id=order.chat_id, text=notification)
-            except Exception as exc:
-                logger.warning("Failed to notify chat %s: %s", order.chat_id, exc)
-
-        await _refresh_orders_summary(context)
-
-    logger.info("Order #%03d status → %s by user %s", order_number, new_status.value, query.from_user.id)
-
-
-async def _refresh_orders_summary(context: ContextTypes.DEFAULT_TYPE) -> None:
-    summary = context.bot_data.get("orders_summary")
-    if not summary:
-        return
-    from bot.services.order_service import get_status_counts
-    from bot.keyboards import build_orders_summary_keyboard
-    async with _session_factory(context)() as session:
-        counts = await get_status_counts(session)
-    keyboard = build_orders_summary_keyboard(counts)
-    try:
-        await context.bot.edit_message_reply_markup(
-            chat_id=summary["chat_id"],
-            message_id=summary["message_id"],
-            reply_markup=keyboard,
-        )
-    except Exception:
-        pass
 
 
 async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -242,13 +164,6 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
         if not order:
             return
 
-        if order.status != OrderStatus.QUEUED:
-            await message.reply_text(
-                f"⚠️ Сообщение отредактировано, но заказ #{order.order_number:03d} "
-                f"уже в обработке — изменения не применены"
-            )
-            return
-
         order_number = order.order_number
         order_id = order.id
         bot_message_id = order.bot_message_id
@@ -258,7 +173,6 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
 
     logger.info("Order #%03d updated via edit", order_number)
 
-    # Уведомление об неизвестных позициях — в тот же чат
     hint_requests: dict = context.bot_data.setdefault("hint_requests", {})
     for raw in unknown_raw_names:
         try:
@@ -279,7 +193,6 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception as exc:
             logger.warning("Failed to notify chat about unknown item: %s", exc)
 
-    # Уведомление об отсутствующих позициях — в тот же чат
     if stock_out_names:
         try:
             names_list = "\n".join(f"  • {n}" for n in stock_out_names)
@@ -295,14 +208,12 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
 
     if bot_message_id:
         items_text = _format_items(item_objs)
-        text = build_order_text(order_number, parsed["client_name"], items_text, OrderStatus.QUEUED)
-        keyboard = build_status_keyboard(order_number, OrderStatus.QUEUED)
+        text = build_order_text(order_number, parsed["client_name"], items_text)
         try:
             await context.bot.edit_message_text(
                 chat_id=message.chat_id,
                 message_id=bot_message_id,
                 text=text,
-                reply_markup=keyboard,
                 parse_mode="HTML",
             )
         except Exception as exc:

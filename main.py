@@ -1,30 +1,23 @@
 import logging
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from config import settings
-from bot.db.database import AsyncSessionLocal, init_db, migrate_db, load_initial_synonyms
+from bot.db.database import AsyncSessionLocal, init_db, load_initial_synonyms
 from bot.services.normalizer import normalizer
-from bot.handlers.order_handler import handle_message, handle_edited_message, handle_order_callback
+from bot.handlers.order_handler import handle_message, handle_edited_message
 from bot.handlers.admin_handler import (
-    cmd_orders,
     cmd_order,
-    cmd_status,
     cmd_synonyms,
     cmd_add_synonym,
     cmd_unknown,
     cmd_resolve,
     cmd_cache,
     cmd_cache_clear,
-    cmd_queued,
-    cmd_processing,
-    cmd_delivery,
-    cmd_delivered,
-    handle_orders_callback,
+    cmd_cache_clear_all,
     cmd_stock_refresh,
     cmd_stock_status,
-    cmd_cache_clear_all,
 )
 
 logging.basicConfig(
@@ -36,7 +29,6 @@ logger = logging.getLogger(__name__)
 
 
 async def post_init(application: Application) -> None:
-    await migrate_db()
     await init_db()
     await load_initial_synonyms()
     async with AsyncSessionLocal() as session:
@@ -76,21 +68,8 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & filters.TEXT, handle_edited_message))
 
-    # Callbacks: статусы заказов
-    app.add_handler(CallbackQueryHandler(handle_order_callback, pattern=r"^status:\d+"))
-    # Callbacks: навигация по заказам (/orders меню)
-    app.add_handler(CallbackQueryHandler(handle_orders_callback, pattern=r"^orders_"))
-
-    # Просмотр заказов
-    app.add_handler(CommandHandler("orders", cmd_orders))
-    app.add_handler(CommandHandler("queued", cmd_queued))
-    app.add_handler(CommandHandler("processing", cmd_processing))
-    app.add_handler(CommandHandler("delivery", cmd_delivery))
-    app.add_handler(CommandHandler("delivered", cmd_delivered))
-
     # Управление заказами
     app.add_handler(CommandHandler("order", cmd_order))
-    app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("unknown", cmd_unknown))
     app.add_handler(CommandHandler("resolve", cmd_resolve))
 
@@ -110,7 +89,6 @@ def main() -> None:
         allowed_updates=[
             Update.MESSAGE,
             Update.EDITED_MESSAGE,
-            Update.CALLBACK_QUERY,
         ]
     )
 

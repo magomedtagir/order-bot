@@ -4,5 +4,11 @@ services:
     restart: unless-stopped
     env_file: .env
     volumes:
-      - ./orders.db:/app/orders.db
       - ./data:/app/data
+    networks:
+      - app_net
+
+networks:
+  app_net:
+    external: true
+    name: docker-prod_app_net
