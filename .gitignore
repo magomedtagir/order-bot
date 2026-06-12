@@ -4,8 +4,6 @@ __pycache__/
 *.pyd
 .env
 orders.db
-*.xlsx
-*.xls
 .venv/
 venv/
 *.egg-info/

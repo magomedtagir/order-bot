@@ -11,7 +11,7 @@ class Base(DeclarativeBase):
 
 
 class Order(Base):
-    __tablename__ = "orders"
+    __tablename__ = "tg_orders"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     order_number = Column(Integer, unique=True, nullable=False)
@@ -27,10 +27,10 @@ class Order(Base):
 
 
 class OrderItem(Base):
-    __tablename__ = "order_items"
+    __tablename__ = "tg_order_items"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    order_id = Column(Integer, ForeignKey("orders.id"), nullable=False)
+    order_id = Column(Integer, ForeignKey("tg_orders.id"), nullable=False)
     raw_name = Column(String(255), nullable=False)
     normalized_name = Column(String(255), nullable=True)
     quantity = Column(String(50), nullable=False)
@@ -42,7 +42,7 @@ class OrderItem(Base):
 
 
 class Synonym(Base):
-    __tablename__ = "synonyms"
+    __tablename__ = "tg_synonyms"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     raw_name = Column(String(255), unique=True, nullable=False)
@@ -50,7 +50,7 @@ class Synonym(Base):
 
 
 class ClientNameCache(Base):
-    __tablename__ = "client_name_cache"
+    __tablename__ = "tg_client_name_cache"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     client_id = Column(String(255), nullable=False)
@@ -63,12 +63,19 @@ class ClientNameCache(Base):
     __table_args__ = (UniqueConstraint("client_id", "base_name", name="uq_client_base"),)
 
 
+class Product(Base):
+    __tablename__ = "products"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    full_name = Column(String(512), nullable=False, unique=True)
+
+
 class UnknownItem(Base):
-    __tablename__ = "unknown_items"
+    __tablename__ = "tg_unknown_items"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     client_id = Column(String(255), nullable=False)
-    order_id = Column(Integer, ForeignKey("orders.id"), nullable=False)
+    order_id = Column(Integer, ForeignKey("tg_orders.id"), nullable=False)
     raw_name = Column(String(255), nullable=False)
     base_name = Column(String(255), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
