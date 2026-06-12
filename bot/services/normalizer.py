@@ -5,9 +5,9 @@ from typing import Optional
 
 from rapidfuzz import fuzz, process as fuzz_process
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, text
+from sqlalchemy import select
 
-from bot.models.models import Synonym, ClientNameCache, UnknownItem
+from bot.models.models import Synonym, ClientNameCache, UnknownItem, Product
 
 logger = logging.getLogger(__name__)
 
@@ -86,35 +86,16 @@ class SmartNormalizer:
 
     async def _load_products(self, session: AsyncSession) -> None:
         try:
-            # Загружаем товары
-            result = await session.execute(text("SELECT id, full_name FROM products"))
-            products = result.fetchall()
-            product_map: dict[int, str] = {row.id: row.full_name for row in products}
-
-            self._product_full_names = [row.full_name for row in products]
+            result = await session.execute(select(Product))
+            products = result.scalars().all()
+            self._product_full_names = [p.full_name for p in products]
             self._product_name_bases = [
                 extract_base_name(fn) for fn in self._product_full_names
             ]
-
-            # Загружаем псевдонимы
-            result = await session.execute(
-                text("SELECT product_id, alias FROM product_aliases")
-            )
-            aliases = result.fetchall()
             self._alias_to_product = {}
-            for row in aliases:
-                if row.product_id in product_map:
-                    alias_base = extract_base_name(row.alias)
-                    if alias_base:
-                        self._alias_to_product[alias_base] = product_map[row.product_id]
-
-            logger.info(
-                "[NORMALIZER] Products loaded: %d, aliases: %d",
-                len(self._product_full_names),
-                len(self._alias_to_product),
-            )
+            logger.info("[NORMALIZER] Products loaded: %d", len(self._product_full_names))
         except Exception as exc:
-            logger.warning("[NORMALIZER] Failed to load products/aliases: %s", exc)
+            logger.warning("[NORMALIZER] Failed to load products: %s", exc)
             await session.rollback()
             self._product_full_names = []
             self._product_name_bases = []
