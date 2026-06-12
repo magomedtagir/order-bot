@@ -115,6 +115,7 @@ class SmartNormalizer:
             )
         except Exception as exc:
             logger.warning("[NORMALIZER] Failed to load products/aliases: %s", exc)
+            await session.rollback()
             self._product_full_names = []
             self._product_name_bases = []
             self._alias_to_product = {}
