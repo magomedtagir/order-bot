@@ -27,6 +27,57 @@ def _hint_key(chat_id: int, message_id: int) -> str:
     return f"{chat_id}:{message_id}"
 
 
+async def _send_unknown_hints(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    unknown_names: list[str],
+    client_name: str,
+    order_id: int,
+    order_number: int,
+) -> None:
+    hint_requests: dict = context.bot_data.setdefault("hint_requests", {})
+    for raw in unknown_names:
+        try:
+            sent_hint = await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f'❓ Неизвестная позиция в заказе #{order_number:03d} '
+                    f'({client_name}): «{raw}»\n'
+                    f'Ответьте на это сообщение правильным названием.'
+                )
+            )
+            hint_requests[_hint_key(chat_id, sent_hint.message_id)] = {
+                "raw_name": raw,
+                "client_name": client_name,
+                "order_id": order_id,
+                "order_number": order_number,
+            }
+        except Exception as exc:
+            logger.warning("Failed to notify chat about unknown item: %s", exc)
+
+
+async def _send_stock_out_notice(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    order_number: int,
+    client_name: str,
+    stock_out_names: list[str],
+) -> None:
+    if not stock_out_names:
+        return
+    try:
+        names_list = "\n".join(f"  • {n}" for n in stock_out_names)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f'🚫 Нет в наличии (заказ #{order_number:03d}, {client_name}):\n'
+                f'{names_list}'
+            )
+        )
+    except Exception as exc:
+        logger.warning("Failed to notify admin about stock: %s", exc)
+
+
 async def _handle_hint_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Called when a message is a reply — check if it's a hint for an unknown item."""
     message = update.message
@@ -56,10 +107,8 @@ async def _handle_hint_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
             .where(UnknownItem.order_id == hint["order_id"], UnknownItem.raw_name == hint["raw_name"])
             .values(resolved=True)
         )
+        await normalizer.prepare_resolution(session, hint["client_name"], hint["raw_name"], resolved_name)
         await session.commit()
-
-    async with _session_factory(context)() as session:
-        await normalizer.add_resolution(session, hint["client_name"], hint["raw_name"], resolved_name)
 
     hint_requests.pop(key, None)
 
@@ -109,38 +158,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     logger.info("Order #%03d created: %s (%d items)", order.order_number, order.client_name, len(parsed["items"]))
 
-    hint_requests: dict = context.bot_data.setdefault("hint_requests", {})
-    for raw in unknown_items:
-        try:
-            sent_hint = await context.bot.send_message(
-                chat_id=message.chat_id,
-                text=(
-                    f'❓ Неизвестная позиция в заказе #{order.order_number:03d} '
-                    f'({order.client_name}): «{raw}»\n'
-                    f'Ответьте на это сообщение правильным названием.'
-                )
-            )
-            hint_requests[_hint_key(message.chat_id, sent_hint.message_id)] = {
-                "raw_name": raw,
-                "client_name": order.client_name,
-                "order_id": order.id,
-                "order_number": order.order_number,
-            }
-        except Exception as exc:
-            logger.warning("Failed to notify chat about unknown item: %s", exc)
-
-    if stock_out_names:
-        try:
-            names_list = "\n".join(f"  • {n}" for n in stock_out_names)
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text=(
-                    f'🚫 Нет в наличии (заказ #{order.order_number:03d}, {order.client_name}):\n'
-                    f'{names_list}'
-                )
-            )
-        except Exception as exc:
-            logger.warning("Failed to notify admin about stock: %s", exc)
+    await _send_unknown_hints(
+        context, message.chat_id, unknown_items,
+        order.client_name, order.id, order.order_number,
+    )
+    await _send_stock_out_notice(
+        context, message.chat_id, order.order_number, order.client_name, stock_out_names,
+    )
 
     items_text = _format_items(item_objs)
     text = build_order_text(order.order_number, order.client_name, items_text)
@@ -173,38 +197,13 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
 
     logger.info("Order #%03d updated via edit", order_number)
 
-    hint_requests: dict = context.bot_data.setdefault("hint_requests", {})
-    for raw in unknown_raw_names:
-        try:
-            sent_hint = await context.bot.send_message(
-                chat_id=message.chat_id,
-                text=(
-                    f'❓ Неизвестная позиция в заказе #{order_number:03d} '
-                    f'({parsed["client_name"]}): «{raw}»\n'
-                    f'Ответьте на это сообщение правильным названием.'
-                )
-            )
-            hint_requests[_hint_key(message.chat_id, sent_hint.message_id)] = {
-                "raw_name": raw,
-                "client_name": parsed["client_name"],
-                "order_id": order_id,
-                "order_number": order_number,
-            }
-        except Exception as exc:
-            logger.warning("Failed to notify chat about unknown item: %s", exc)
-
-    if stock_out_names:
-        try:
-            names_list = "\n".join(f"  • {n}" for n in stock_out_names)
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text=(
-                    f'🚫 Нет в наличии (заказ #{order_number:03d}, {parsed["client_name"]}):\n'
-                    f'{names_list}'
-                )
-            )
-        except Exception as exc:
-            logger.warning("Failed to notify admin about stock: %s", exc)
+    await _send_unknown_hints(
+        context, message.chat_id, unknown_raw_names,
+        parsed["client_name"], order_id, order_number,
+    )
+    await _send_stock_out_notice(
+        context, message.chat_id, order_number, parsed["client_name"], stock_out_names,
+    )
 
     if bot_message_id:
         items_text = _format_items(item_objs)

@@ -148,7 +148,9 @@ async def create_order(
             chat_id=chat_id,
         )
         session.add(order)
-        await session.flush()
+        # Commit inside the lock so the row is visible to the next caller's
+        # SELECT MAX — PostgreSQL READ COMMITTED won't see an uncommitted flush.
+        await session.commit()
 
     item_objs, unknown_raw_names, stock_out_names = await _build_items(order.id, items, client_name, session)
     for obj in item_objs:

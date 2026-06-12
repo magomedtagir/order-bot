@@ -344,6 +344,24 @@ class SmartNormalizer:
             await session.commit()
         return count
 
+    async def prepare_resolution(
+        self,
+        session: AsyncSession,
+        client_name: str,
+        raw_name: str,
+        full_name: str,
+    ) -> None:
+        """Write resolution to DB and update in-memory cache — caller commits."""
+        base = extract_base_name(raw_name)
+        async with self._lock:
+            await self._write_cache(session, client_name, base, full_name, "manual", 1.0)
+            if base:
+                self._alias_to_product[base] = full_name
+        logger.info(
+            '[НОРМАЛИЗАТОР] Manual resolution: client=%s raw="%s" → "%s"',
+            client_name, raw_name, full_name,
+        )
+
     async def add_resolution(
         self,
         session: AsyncSession,
@@ -351,17 +369,8 @@ class SmartNormalizer:
         raw_name: str,
         full_name: str,
     ) -> None:
-        base = extract_base_name(raw_name)
-        async with self._lock:
-            await self._write_cache(session, client_name, base, full_name, "manual", 1.0)
-            # Также добавляем в alias_to_product для будущих заказов
-            if base:
-                self._alias_to_product[base] = full_name
+        await self.prepare_resolution(session, client_name, raw_name, full_name)
         await session.commit()
-        logger.info(
-            '[НОРМАЛИЗАТОР] Manual resolution: client=%s raw="%s" → "%s"',
-            client_name, raw_name, full_name,
-        )
 
 
 normalizer = SmartNormalizer()

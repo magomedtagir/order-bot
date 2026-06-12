@@ -1,18 +1,16 @@
 import logging
 import shlex
-from datetime import date as date_cls
 
 from telegram import Update
 from telegram.ext import ContextTypes
 from sqlalchemy.ext.asyncio import async_sessionmaker
-from sqlalchemy import select
+from sqlalchemy import select, update as sa_update
 
 from config import settings
-from bot.models.models import Synonym, UnknownItem
+from bot.models.models import Synonym, UnknownItem, OrderItem, ClientNameCache
 from bot.services.normalizer import normalizer
 from bot.services.order_service import (
     get_order_by_number,
-    get_recent_orders,
     get_unknown_items,
 )
 
@@ -184,9 +182,6 @@ async def cmd_resolve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     raw_name = raw_args[1]
     full_name = raw_args[2]
 
-    from sqlalchemy import update as sa_update
-    from bot.models.models import OrderItem
-
     async with _session_factory(context)() as session:
         order = await get_order_by_number(session, order_number)
         if not order:
@@ -200,17 +195,13 @@ async def cmd_resolve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             .where(OrderItem.order_id == order.id, OrderItem.raw_name == raw_name)
             .values(normalized_name=full_name, is_unknown=False)
         )
-
         await session.execute(
             sa_update(UnknownItem)
             .where(UnknownItem.order_id == order.id, UnknownItem.raw_name == raw_name)
             .values(resolved=True)
         )
-
+        await normalizer.prepare_resolution(session, client_name, raw_name, full_name)
         await session.commit()
-
-    async with _session_factory(context)() as session:
-        await normalizer.add_resolution(session, client_name, raw_name, full_name)
 
     await update.message.reply_text(
         f'✅ Позиция «{raw_name}» в заказе #{order_number:03d} сопоставлена с «{full_name}»\n'
@@ -268,7 +259,6 @@ async def cmd_cache_clear_all(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     from sqlalchemy import delete
-    from bot.models.models import ClientNameCache
 
     async with _session_factory(context)() as session:
         result = await session.execute(delete(ClientNameCache))
