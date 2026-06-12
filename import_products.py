@@ -23,13 +23,17 @@ async def main(xlsx_path: str) -> None:
     wb = openpyxl.load_workbook(xlsx_path)
     ws = wb["Товары"]
 
+    seen: set[str] = set()
     names: list[str] = []
     for row in ws.iter_rows(min_row=3, values_only=True):
         full_name = row[1]
         if full_name and str(full_name).strip():
-            names.append(str(full_name).strip())
+            name = str(full_name).strip()
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
 
-    print(f"Найдено товаров в Excel: {len(names)}")
+    print(f"Найдено товаров в Excel (уникальных): {len(names)}")
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -43,12 +47,13 @@ async def main(xlsx_path: str) -> None:
         for name in names:
             if name not in existing_names:
                 session.add(Product(full_name=name))
+                existing_names.add(name)
                 added += 1
 
         await session.commit()
 
     print(f"Добавлено новых товаров: {added}")
-    print(f"Уже было в БД: {len(existing_names)}")
+    print(f"Уже было в БД: {len(existing_names) - added}")
     await engine.dispose()
 
 
