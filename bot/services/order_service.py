@@ -93,8 +93,8 @@ async def _build_items(
     if settings.STOCK_API_TOKEN:
         try:
             await stock_checker.ensure_fresh(
-                settings.STOCK_API_URL_IPSH,
-                settings.STOCK_API_URL_IPD,
+                settings.STOCK_API_BASE_URL,
+                settings.stock_bases_list,
                 settings.STOCK_API_TOKEN,
             )
         except Exception as exc:
