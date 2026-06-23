@@ -27,7 +27,7 @@ class StockChecker:
         try:
             r = await client.get(
                 url,
-                headers={"Authorization": f"Bearer {token}"},
+                headers={"AuthorizationToken": f"Bearer {token}"},
                 timeout=10.0,
             )
             r.raise_for_status()
