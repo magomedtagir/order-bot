@@ -7,7 +7,7 @@ from rapidfuzz import fuzz, process as fuzz_process
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from bot.models.models import Synonym, ClientNameCache, UnknownItem, Product
+from bot.models.models import Synonym, ClientNameCache, UnknownItem
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +54,6 @@ class SmartNormalizer:
     async def reload(self, session: AsyncSession) -> None:
         async with self._lock:
             await self._load_client_cache(session)
-            await self._load_products(session)
-            # Load synonyms last — they extend _alias_to_product set by _load_products
             await self._load_synonyms(session)
 
     async def _load_synonyms(self, session: AsyncSession) -> None:
@@ -83,23 +81,6 @@ class SmartNormalizer:
                 "confidence": r.confidence,
             }
         logger.info("[NORMALIZER] Client cache loaded: %d clients", len(self._client_cache))
-
-    async def _load_products(self, session: AsyncSession) -> None:
-        try:
-            result = await session.execute(select(Product))
-            products = result.scalars().all()
-            self._product_full_names = [p.full_name for p in products]
-            self._product_name_bases = [
-                extract_base_name(fn) for fn in self._product_full_names
-            ]
-            self._alias_to_product = {}
-            logger.info("[NORMALIZER] Products loaded: %d", len(self._product_full_names))
-        except Exception as exc:
-            logger.warning("[NORMALIZER] Failed to load products: %s", exc)
-            await session.rollback()
-            self._product_full_names = []
-            self._product_name_bases = []
-            self._alias_to_product = {}
 
     # ── Запись в кэш клиента ───────────────────────────────────────────────
 
