@@ -282,8 +282,8 @@ async def cmd_stock_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     msg = await update.message.reply_text("⏳ Обновляю остатки...")
     try:
         count = await stock_checker.refresh(
-            settings.STOCK_API_URL_IPSH,
-            settings.STOCK_API_URL_IPD,
+            settings.STOCK_API_BASE_URL,
+            settings.stock_bases_list,
             settings.STOCK_API_TOKEN,
         )
         ts = stock_checker.last_refresh.strftime("%d.%m.%Y %H:%M:%S")

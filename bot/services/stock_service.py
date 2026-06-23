@@ -36,19 +36,20 @@ class StockChecker:
             logger.warning("[STOCK] Failed to fetch %s: %s", url, exc)
             return []
 
-    async def refresh(self, url_ipsh: str, url_ipd: str, token: str) -> int:
+    async def refresh(self, base_url: str, bases: list[str], token: str) -> int:
+        urls = [f"{base_url.rstrip('/')}/{b}/hs/analytics/stocks" for b in bases]
         async with httpx.AsyncClient() as client:
-            data_ipsh, data_ipd = await asyncio.gather(
-                self._fetch(client, url_ipsh, token),
-                self._fetch(client, url_ipd, token),
-            )
+            results = await asyncio.gather(*[self._fetch(client, url, token) for url in urls])
 
         merged: dict[str, float] = {}
-        for item in data_ipsh + data_ipd:
-            name = item.get("ItemName", "").strip()
-            qty = float(item.get("Quantity") or 0)
-            if name:
-                merged[name] = merged.get(name, 0) + qty
+        counts = []
+        for data in results:
+            counts.append(len(data))
+            for item in data:
+                name = item.get("ItemName", "").strip()
+                qty = float(item.get("Quantity") or 0)
+                if name:
+                    merged[name] = merged.get(name, 0) + qty
 
         async with self._lock:
             self._item_names = list(merged.keys())
@@ -57,9 +58,9 @@ class StockChecker:
             self._last_refresh = datetime.utcnow()
 
         count = len(self._item_names)
-        logger.info("[STOCK] Refreshed: %d unique items (ipsh=%d, ipd=%d)", count, len(data_ipsh), len(data_ipd))
+        base_counts = ", ".join(f"{b}={c}" for b, c in zip(bases, counts))
+        logger.info("[STOCK] Refreshed: %d unique items (%s)", count, base_counts)
 
-        # Обновляем каталог нормализатора именами из 1С
         try:
             from bot.services.normalizer import normalizer
             await normalizer.update_from_stock(self._item_names)
@@ -68,13 +69,13 @@ class StockChecker:
 
         return count
 
-    async def ensure_fresh(self, url_ipsh: str, url_ipd: str, token: str) -> None:
+    async def ensure_fresh(self, base_url: str, bases: list[str], token: str) -> None:
         needs_refresh = (
             self._last_refresh is None
             or (datetime.utcnow() - self._last_refresh).total_seconds() > self.REFRESH_INTERVAL
         )
         if needs_refresh:
-            await self.refresh(url_ipsh, url_ipd, token)
+            await self.refresh(base_url, bases, token)
 
     def check(self, normalized_name: str) -> tuple[bool, Optional[float]]:
         """

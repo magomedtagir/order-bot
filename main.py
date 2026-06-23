@@ -39,8 +39,8 @@ async def post_init(application: Application) -> None:
         from bot.services.stock_service import stock_checker
         try:
             count = await stock_checker.refresh(
-                settings.STOCK_API_URL_IPSH,
-                settings.STOCK_API_URL_IPD,
+                settings.STOCK_API_BASE_URL,
+                settings.stock_bases_list,
                 settings.STOCK_API_TOKEN,
             )
             logger.info("Stock preloaded: %d items", count)

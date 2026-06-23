@@ -10,9 +10,13 @@ class Settings(BaseSettings):
     ADMIN_IDS: str = ""
     DATABASE_URL: str = "postgresql+asyncpg://USER:PASSWORD@HOST:5432/DBNAME"
     LOG_LEVEL: str = "INFO"
-    STOCK_API_URL_IPSH: str = "http://185.63.191.2/ipsh/hs/analytics/stocks"
-    STOCK_API_URL_IPD: str = "http://185.63.191.2/ipd/hs/analytics/stocks"
+    STOCK_API_BASE_URL: str = "http://157.22.192.252"
+    STOCK_API_BASES: str = "ipsh,ipmmg,dk,roz,ipd"
     STOCK_API_TOKEN: str = ""
+
+    @property
+    def stock_bases_list(self) -> list[str]:
+        return [b.strip() for b in self.STOCK_API_BASES.split(",") if b.strip()]
 
     model_config = SettingsConfigDict(
         env_file=".env",
