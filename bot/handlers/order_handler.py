@@ -179,13 +179,17 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
     if not message or not message.text:
         return
 
+    logger.info("[EDIT] msg_id=%s chat_id=%s text=%r", message.message_id, message.chat_id, message.text[:50])
+
     parsed = parse_order_text(message.text)
     if not parsed:
+        logger.info("[EDIT] not an order — skipped")
         return
 
     async with _session_factory(context)() as session:
         order = await get_order_by_message(session, message.message_id, message.chat_id)
         if not order:
+            logger.warning("[EDIT] order not found for msg_id=%s chat_id=%s", message.message_id, message.chat_id)
             return
 
         order_number = order.order_number
