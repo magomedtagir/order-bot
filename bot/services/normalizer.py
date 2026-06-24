@@ -149,20 +149,8 @@ class SmartNormalizer:
             )
             return cached["full_name"], False
 
-        # Шаг 3 — точное совпадение base_name с псевдонимом товара
-        if base in self._alias_to_product:
-            full_name = self._alias_to_product[base]
-            async with self._lock:
-                await self._write_cache(session, client_name, base, full_name, "alias", 1.0)
-            logger.info(
-                '[НОРМАЛИЗАТОР] client=%s raw="%s" base="%s" → "%s" via=alias confidence=1.0',
-                client_name, raw_name, base, full_name,
-            )
-            return full_name, False
-
-        # Шаг 4 — нечёткое словарное сопоставление:
-        # каждое слово из base_name должно нечётко совпадать хотя бы с одним словом full_name
-        _WORD_THRESHOLD = 75  # минимальная схожесть одного слова
+        # Шаг 3 — word-by-word поиск по каталогу 1С
+        _WORD_THRESHOLD = 75
         words = base.split()
         candidates: list[tuple[str, float]] = []
 
@@ -174,7 +162,6 @@ class SmartNormalizer:
 
             for qw in words:
                 if qw in fn_lower:
-                    # Быстрый путь: точное вхождение
                     total_score += 100
                     continue
                 best = max((fuzz.ratio(qw, fw) for fw in fn_words), default=0)
@@ -187,7 +174,6 @@ class SmartNormalizer:
                 candidates.append((fn, total_score / len(words)))
 
         if candidates:
-            # Лучший средний score, при равенстве — более короткий full_name
             full_name = max(candidates, key=lambda x: (x[1], -len(x[0])))[0]
             confidence = round(max(candidates, key=lambda x: x[1])[1] / 100, 2)
             async with self._lock:
@@ -198,8 +184,7 @@ class SmartNormalizer:
             )
             return full_name, False
 
-        # Шаг 5 — нечёткий поиск по extract_base_name(full_name) всех товаров
-        # Для коротких слов снижаем порог
+        # Шаг 4 — нечёткий поиск по каталогу 1С
         threshold = 60 if len(base) < 6 else FUZZY_THRESHOLD
         if self._product_name_bases:
             result = fuzz_process.extractOne(
@@ -219,6 +204,17 @@ class SmartNormalizer:
                     client_name, raw_name, base, full_name, confidence,
                 )
                 return full_name, False
+
+        # Шаг 5 — точное совпадение с синонимом (fallback)
+        if base in self._alias_to_product:
+            full_name = self._alias_to_product[base]
+            async with self._lock:
+                await self._write_cache(session, client_name, base, full_name, "alias", 1.0)
+            logger.info(
+                '[НОРМАЛИЗАТОР] client=%s raw="%s" base="%s" → "%s" via=alias confidence=1.0',
+                client_name, raw_name, base, full_name,
+            )
+            return full_name, False
 
         # Шаг 6 — неизвестная позиция
         logger.info(
