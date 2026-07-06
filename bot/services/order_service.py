@@ -49,8 +49,12 @@ def parse_order_text(text: str) -> Optional[dict]:
     item_lines = []
     items_started = False
 
-    for line in lines[1:]:
-        if not items_started and not _ITEM_RE.match(line):
+    for idx, line in enumerate(lines[1:]):
+        # The very first line after the flags is always the client/branch
+        # header, even if it happens to end in a digit (e.g. "Хлебозавод 3")
+        # and would otherwise look like an item line to _ITEM_RE.
+        is_header_line = not items_started and (idx == 0 or not _ITEM_RE.match(line))
+        if is_header_line:
             cleaned = _clean_client_name(line)
             if cleaned:
                 header_parts.append(cleaned)
