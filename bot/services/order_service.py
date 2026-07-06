@@ -1,7 +1,8 @@
 import asyncio
 import re
 import logging
-from datetime import datetime
+from collections import defaultdict
+from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,9 @@ from bot.services.stock_service import stock_checker
 logger = logging.getLogger(__name__)
 
 _order_create_lock = asyncio.Lock()
+
+REORDER_LOOKBACK_WEEKS = 4
+ACTIVE_CHAT_LOOKBACK_DAYS = 30
 
 _EMOJI_RE = re.compile(
     "["
@@ -295,3 +299,68 @@ async def get_unknown_items(session: AsyncSession) -> list[UnknownItem]:
         .options(selectinload(UnknownItem.order))
     )
     return list(result.scalars().all())
+
+
+async def compute_reorder_report(
+    session: AsyncSession, weeks: int = REORDER_LOOKBACK_WEEKS
+) -> list[dict]:
+    """Compare recent per-item order volume against current 1C stock.
+
+    Flags an item when its current stock is already below the average
+    weekly volume ordered over the lookback window (i.e. it would run out
+    within a week at the recent pace).
+    """
+    cutoff = datetime.utcnow() - timedelta(weeks=weeks)
+    result = await session.execute(
+        select(OrderItem.normalized_name, OrderItem.unit, OrderItem.quantity, Order.created_at)
+        .join(Order, OrderItem.order_id == Order.id)
+        .where(
+            Order.created_at >= cutoff,
+            OrderItem.is_unknown == False,
+            OrderItem.normalized_name.isnot(None),
+        )
+    )
+    rows = result.all()
+    if not rows:
+        return []
+
+    totals: dict[tuple[str, str], float] = defaultdict(float)
+    earliest = datetime.utcnow()
+    for normalized_name, unit, quantity, created_at in rows:
+        try:
+            qty = float(quantity.replace(",", "."))
+        except (ValueError, AttributeError):
+            continue
+        totals[(normalized_name, unit or "")] += qty
+        earliest = min(earliest, created_at)
+
+    span_weeks = max((datetime.utcnow() - earliest).days / 7, 1.0)
+
+    reorder = []
+    for (name, unit), total_qty in totals.items():
+        weekly_avg = total_qty / span_weeks
+        if weekly_avg <= 0:
+            continue
+        _, current_qty = stock_checker.check(name)
+        if current_qty is None:
+            continue
+        if current_qty < weekly_avg:
+            reorder.append({
+                "name": name,
+                "unit": unit,
+                "current_qty": current_qty,
+                "weekly_avg": weekly_avg,
+            })
+
+    reorder.sort(key=lambda r: r["current_qty"] / r["weekly_avg"])
+    return reorder
+
+
+async def get_active_chat_ids(session: AsyncSession, days: int = ACTIVE_CHAT_LOOKBACK_DAYS) -> list[int]:
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    result = await session.execute(
+        select(Order.chat_id)
+        .where(Order.chat_id.isnot(None), Order.created_at >= cutoff)
+        .distinct()
+    )
+    return [row[0] for row in result.all()]

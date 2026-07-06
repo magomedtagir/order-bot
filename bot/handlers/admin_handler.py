@@ -13,6 +13,7 @@ from bot.services.order_service import (
     get_order_by_number,
     get_unknown_items,
 )
+from bot.handlers.order_handler import send_reorder_report
 
 logger = logging.getLogger(__name__)
 
@@ -308,3 +309,14 @@ async def cmd_stock_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         f"Позиций в кэше: {stock_checker.item_count}",
         parse_mode="HTML",
     )
+
+
+async def cmd_reorder_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _require_admin(update):
+        return
+
+    if not settings.STOCK_API_TOKEN:
+        await update.message.reply_text("⚠️ STOCK_API_TOKEN не задан в .env")
+        return
+
+    await send_reorder_report(context, chat_ids=[update.effective_chat.id])

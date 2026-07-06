@@ -1,10 +1,12 @@
 import html
 import logging
+from typing import Optional
 from sqlalchemy import update as sa_update
 from telegram import Update
 from telegram.ext import ContextTypes
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from config import settings
 from bot.models.models import OrderItem, UnknownItem
 from bot.keyboards import build_order_text
 from bot.services.normalizer import normalizer
@@ -14,6 +16,8 @@ from bot.services.order_service import (
     get_order_by_message,
     update_order_items,
     set_bot_message_id,
+    compute_reorder_report,
+    get_active_chat_ids,
 )
 
 logger = logging.getLogger(__name__)
@@ -76,6 +80,52 @@ async def _send_stock_out_notice(
         )
     except Exception as exc:
         logger.warning("Failed to notify admin about stock: %s", exc)
+
+
+def _format_reorder_report(items: list[dict]) -> str:
+    if not items:
+        return "✅ Все позиции в достатке — на ближайшую неделю дозаказ не требуется."
+    lines = ["📦 <b>Пора дозаказать</b> (остаток меньше расхода за неделю):\n"]
+    for r in items:
+        unit = f" {html.escape(r['unit'])}" if r["unit"] else ""
+        lines.append(
+            f"  • {html.escape(r['name'])} — остаток {r['current_qty']:.1f}{unit}, "
+            f"расход/нед ~{r['weekly_avg']:.1f}{unit}"
+        )
+    return "\n".join(lines)
+
+
+async def send_reorder_report(
+    context: ContextTypes.DEFAULT_TYPE, chat_ids: Optional[list[int]] = None
+) -> None:
+    """Build the reorder report and send it to the given chats (or all recently active chats)."""
+    if settings.STOCK_API_TOKEN:
+        from bot.services.stock_service import stock_checker
+        try:
+            await stock_checker.refresh(
+                settings.STOCK_API_BASE_URL, settings.stock_bases_list, settings.STOCK_API_TOKEN,
+            )
+        except Exception as exc:
+            logger.warning("[REORDER] Stock refresh failed: %s", exc)
+
+    async with _session_factory(context)() as session:
+        report = await compute_reorder_report(session)
+        targets = chat_ids if chat_ids is not None else await get_active_chat_ids(session)
+
+    text = _format_reorder_report(report)
+    for chat_id in targets:
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+        except Exception as exc:
+            logger.warning("[REORDER] Failed to send report to %s: %s", chat_id, exc)
+
+
+async def weekly_reorder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not settings.STOCK_API_TOKEN:
+        logger.info("[REORDER] Skipped weekly job — STOCK_API_TOKEN not set")
+        return
+    logger.info("[REORDER] Running weekly reorder report job")
+    await send_reorder_report(context)
 
 
 async def _handle_hint_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

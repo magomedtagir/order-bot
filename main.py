@@ -1,4 +1,6 @@
 import logging
+from datetime import time as dtime
+from zoneinfo import ZoneInfo
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
@@ -6,7 +8,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from config import settings
 from bot.db.database import AsyncSessionLocal, init_db, load_initial_synonyms
 from bot.services.normalizer import normalizer
-from bot.handlers.order_handler import handle_message, handle_edited_message
+from bot.handlers.order_handler import handle_message, handle_edited_message, weekly_reorder_job
 from bot.handlers.admin_handler import (
     cmd_order,
     cmd_synonyms,
@@ -18,7 +20,10 @@ from bot.handlers.admin_handler import (
     cmd_cache_clear_all,
     cmd_stock_refresh,
     cmd_stock_status,
+    cmd_reorder_report,
 )
+
+REPORT_TIMEZONE = ZoneInfo("Europe/Moscow")
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
@@ -83,6 +88,16 @@ def main() -> None:
     # Остатки
     app.add_handler(CommandHandler("stock_refresh", cmd_stock_refresh))
     app.add_handler(CommandHandler("stock_status", cmd_stock_status))
+    app.add_handler(CommandHandler("reorder_report", cmd_reorder_report))
+
+    if settings.STOCK_API_TOKEN:
+        app.job_queue.run_daily(
+            weekly_reorder_job,
+            time=dtime(hour=8, minute=0, tzinfo=REPORT_TIMEZONE),
+            days=(1,),  # понедельник (PTB 20+: 0=воскресенье, 1=понедельник)
+            name="weekly_reorder_report",
+        )
+        logger.info("Weekly reorder report scheduled: Monday 08:00 (Europe/Moscow)")
 
     logger.info("Starting polling...")
     app.run_polling(
