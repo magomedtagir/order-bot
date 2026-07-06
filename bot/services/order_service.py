@@ -29,12 +29,84 @@ _EMOJI_RE = re.compile(
     "]+",
     flags=re.UNICODE,
 )
-_ITEM_RE = re.compile(r"^(.+?)\s+([\d.,]+)\s*(.*)$")
+_QTY_TOKEN_RE = re.compile(r"^\d+[.,]?\d*$")
+_HYPHEN_BEFORE_DIGIT_RE = re.compile(r"(\S)-(\d)")
+_DIGIT_BEFORE_LETTER_RE = re.compile(r"(\d)([^\d\s.,])")
+
+# Units recognized as a single trailing token when disambiguating two items
+# smashed onto one line (e.g. "Маковая начинка 1  маргарин-2 ящ"). Only
+# consulted when another quantity follows later on the same line — the last
+# (or only) quantity on a line always takes everything after it as its unit,
+# whether or not that text is a "known" unit word.
+_UNIT_WORDS = {
+    "кг", "г", "гр", "л", "мл", "шт", "в",
+    "уп", "упак", "упаковка",
+    "вед", "ведер", "ведро",
+    "мешок", "мешка", "мешков",
+    "кор", "коробка", "коробок",
+    "ящ", "ящик", "ящиков",
+    "кон", "канистра", "канистр",
+    "литр", "литров",
+    "бут", "бутылка",
+    "пач", "пачка", "пачек",
+}
 
 
 def _clean_client_name(text: str) -> str:
     text = _EMOJI_RE.sub("", text)
     return re.sub(r"[\s:]+$", "", text).strip()
+
+
+def _tokenize_item_line(line: str) -> list[str]:
+    # Treat a hyphen or a bare digit/letter boundary as a token separator too,
+    # so "дрожжи-3 ящ" and "лавка 1в" split the same way as "дрожжи 3 ящ".
+    line = _HYPHEN_BEFORE_DIGIT_RE.sub(r"\1 \2", line)
+    line = _DIGIT_BEFORE_LETTER_RE.sub(r"\1 \2", line)
+    return line.split()
+
+
+def _split_line_items(line: str) -> list[dict]:
+    """Split one order line into one or more items.
+
+    Usually a line is a single "name quantity unit" item, but managers
+    sometimes type two items on one line with no separator (no comma, just
+    extra spaces) — e.g. "Маковая начинка 1  маргарин-2 ящ" is two items.
+    """
+    tokens = _tokenize_item_line(line)
+    qty_indices = [i for i, t in enumerate(tokens) if _QTY_TOKEN_RE.match(t)]
+    if not qty_indices:
+        return []
+
+    items = []
+    name_start = 0
+    for pos, qty_idx in enumerate(qty_indices):
+        name_tokens = tokens[name_start:qty_idx]
+        if not name_tokens:
+            continue
+
+        next_qty_idx = qty_indices[pos + 1] if pos + 1 < len(qty_indices) else None
+        if next_qty_idx is not None:
+            between = tokens[qty_idx + 1:next_qty_idx]
+            if between and between[0].lower() in _UNIT_WORDS:
+                unit = between[0]
+                name_start = qty_idx + 2
+            else:
+                unit = ""
+                name_start = qty_idx + 1
+        else:
+            unit = " ".join(tokens[qty_idx + 1:])
+            name_start = len(tokens)
+
+        items.append({
+            "raw_name": " ".join(name_tokens),
+            "quantity": tokens[qty_idx].replace(",", "."),
+            "unit": unit,
+        })
+    return items
+
+
+def _line_has_quantity(line: str) -> bool:
+    return any(_QTY_TOKEN_RE.match(t) for t in _tokenize_item_line(line))
 
 
 def parse_order_text(text: str) -> Optional[dict]:
@@ -52,8 +124,8 @@ def parse_order_text(text: str) -> Optional[dict]:
     for idx, line in enumerate(lines[1:]):
         # The very first line after the flags is always the client/branch
         # header, even if it happens to end in a digit (e.g. "Хлебозавод 3")
-        # and would otherwise look like an item line to _ITEM_RE.
-        is_header_line = not items_started and (idx == 0 or not _ITEM_RE.match(line))
+        # and would otherwise look like an item line.
+        is_header_line = not items_started and (idx == 0 or not _line_has_quantity(line))
         if is_header_line:
             cleaned = _clean_client_name(line)
             if cleaned:
@@ -68,13 +140,7 @@ def parse_order_text(text: str) -> Optional[dict]:
 
     items: list[dict] = []
     for line in item_lines:
-        m = _ITEM_RE.match(line)
-        if m:
-            items.append({
-                "raw_name": m.group(1).strip(),
-                "quantity": m.group(2).replace(",", "."),
-                "unit": m.group(3).strip(),
-            })
+        items.extend(_split_line_items(line))
 
     if not items:
         return None
