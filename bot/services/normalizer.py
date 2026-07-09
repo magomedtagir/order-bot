@@ -1,4 +1,5 @@
 import asyncio
+import os
 import re
 import logging
 from typing import Optional
@@ -21,6 +22,10 @@ _NUM_RE = re.compile(r"\d+[.,]?\d*")
 _NON_WORD_RE = re.compile(r"[^\w]")
 
 FUZZY_THRESHOLD = 70
+WORD_THRESHOLD = 75
+
+# Minimum shared prefix to treat two words as sharing a stem.
+_STEM_PREFIX_MIN = 4
 
 
 def extract_base_name(raw: str) -> str:
@@ -29,6 +34,63 @@ def extract_base_name(raw: str) -> str:
     words = [_NON_WORD_RE.sub("", w) for w in s.split()]
     words = [w for w in words if w and w not in _UNITS]
     return " ".join(sorted(words))
+
+
+def _word_score(qw: str, fw: str) -> float:
+    """Similarity between a query word and a catalog word, 0-100.
+
+    Managers often write the bare root of a product name (e.g. "гречка")
+    while the catalog stores a derived adjective form ("гречневый") — these
+    diverge enough in edit-distance ratio to miss the usual fuzzy threshold,
+    but share a long prefix (the common root). Treat a shared prefix that
+    covers nearly all of the shorter word as a stem match.
+    """
+    if qw == fw:
+        return 100.0
+    ratio = fuzz.ratio(qw, fw)
+    shorter = min(len(qw), len(fw))
+    # Stray short tokens (leftover letters from things like "12к") must not
+    # trivially "contain" or "prefix-match" real words — require both sides
+    # to be long enough that a match is meaningful.
+    if shorter < _STEM_PREFIX_MIN:
+        return ratio
+    contains = qw in fw or fw in qw
+    prefix_len = len(os.path.commonprefix([qw, fw]))
+    stem_match = prefix_len >= _STEM_PREFIX_MIN and prefix_len >= shorter - 2
+    if contains or stem_match:
+        # Just clear the pass/fail bar — don't let an approximate stem or
+        # substring match outscore a genuinely close ratio match (e.g. a
+        # compound query word that happens to contain an unrelated catalog
+        # word as a substring, like "нева" inside "гречневая").
+        ratio = max(ratio, WORD_THRESHOLD + 1)
+    return ratio
+
+
+def _catalog_candidates(
+    words: list[str],
+    product_full_names: list[str],
+    product_name_bases: list[str],
+    word_threshold: float = WORD_THRESHOLD,
+) -> list[tuple[str, float]]:
+    """Word-by-word AND-match of query words against each catalog entry."""
+    candidates: list[tuple[str, float]] = []
+    for fn, base_names in zip(product_full_names, product_name_bases):
+        fn_words = base_names.split()
+        fn_lower = fn.lower()
+        total_score = 0.0
+        all_match = True
+        for qw in words:
+            if qw in fn_lower:
+                total_score += 100
+                continue
+            best = max((_word_score(qw, fw) for fw in fn_words), default=0)
+            if best < word_threshold:
+                all_match = False
+                break
+            total_score += best
+        if all_match:
+            candidates.append((fn, total_score / len(words)))
+    return candidates
 
 
 class SmartNormalizer:
@@ -150,28 +212,8 @@ class SmartNormalizer:
             return cached["full_name"], False
 
         # Шаг 3 — word-by-word поиск по каталогу 1С
-        _WORD_THRESHOLD = 75
         words = base.split()
-        candidates: list[tuple[str, float]] = []
-
-        for i, fn in enumerate(self._product_full_names):
-            fn_words = self._product_name_bases[i].split()
-            fn_lower = fn.lower()
-            all_match = True
-            total_score = 0
-
-            for qw in words:
-                if qw in fn_lower:
-                    total_score += 100
-                    continue
-                best = max((fuzz.ratio(qw, fw) for fw in fn_words), default=0)
-                if best < _WORD_THRESHOLD:
-                    all_match = False
-                    break
-                total_score += best
-
-            if all_match:
-                candidates.append((fn, total_score / len(words)))
+        candidates = _catalog_candidates(words, self._product_full_names, self._product_name_bases)
 
         if candidates:
             full_name = max(candidates, key=lambda x: (x[1], -len(x[0])))[0]
@@ -240,23 +282,7 @@ class SmartNormalizer:
         if base in self._alias_to_product:
             return self._alias_to_product[base]
         words = base.split()
-        candidates: list[tuple[str, float]] = []
-        for i, fn in enumerate(self._product_full_names):
-            fn_words = self._product_name_bases[i].split()
-            fn_lower = fn.lower()
-            all_match = True
-            total_score = 0
-            for qw in words:
-                if qw in fn_lower:
-                    total_score += 100
-                    continue
-                best = max((fuzz.ratio(qw, fw) for fw in fn_words), default=0)
-                if best < 75:
-                    all_match = False
-                    break
-                total_score += best
-            if all_match:
-                candidates.append((fn, total_score / len(words)))
+        candidates = _catalog_candidates(words, self._product_full_names, self._product_name_bases)
         if candidates:
             return max(candidates, key=lambda x: (x[1], -len(x[0])))[0]
         if self._product_name_bases:
